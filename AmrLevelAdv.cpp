@@ -5,6 +5,7 @@
 #include <AMReX_TagBox.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_BCUtil.H>
+#include <AMReX_FixedArray.H>
 #include "limiters.H"
 
 using namespace amrex;
@@ -20,21 +21,19 @@ int AmrLevelAdv::verbose = 0;
 Real AmrLevelAdv::cfl = 0.8; // Default value - can be overwritten in settings file
 int AmrLevelAdv::do_reflux = 1;
 
-int AmrLevelAdv::NUM_STATE = 4; // Four variables in the state
+int AmrLevelAdv::NUM_STATE = 8;
 int AmrLevelAdv::NUM_GROW = 2;  // number of ghost cells
 
-//
+typedef FixedArray<Real, NUM_STATE> State;
+
 // Default constructor.  Builds invalid object.
-//
 AmrLevelAdv::AmrLevelAdv()
 {
   // Flux registers store fluxes at patch boundaries to ensure fluxes are conservative between AMR levels
   flux_reg = 0;
 }
 
-//
 // The basic constructor.
-//
 AmrLevelAdv::AmrLevelAdv(Amr &papa, int lev, const Geometry &level_geom, const BoxArray &bl, const DistributionMapping &dm , Real time)
     : AmrLevel(papa, lev, level_geom, bl, dm, time)
 {
@@ -46,22 +45,13 @@ AmrLevelAdv::AmrLevelAdv(Amr &papa, int lev, const Geometry &level_geom, const B
   }
 }
 
-//
 // The destructor.
-//
 AmrLevelAdv::~AmrLevelAdv()
 {
   delete flux_reg;
 }
 
-//
 // Restart from a checkpoint file.
-//
-// AMReX can save simultion state such
-// that if the code crashes, it can be restarted, with different
-// settings files parameters if necessary (e.g. to output about the
-// point of the crash).
-//
 void AmrLevelAdv::restart(Amr &papa, std::istream &is, bool bReadSpecial)
 {
   AmrLevel::restart(papa, is, bReadSpecial);
@@ -73,34 +63,23 @@ void AmrLevelAdv::restart(Amr &papa, std::istream &is, bool bReadSpecial)
   }
 }
 
-//
 // Write a checkpoint file - format is handled automatically by AMReX
 void AmrLevelAdv::checkPoint(const std::string &dir, std::ostream &os, VisMF::How how, bool dump_old)
 {
   AmrLevel::checkPoint(dir, os, how, dump_old);
 }
 
-//
 // Write a plotfile to specified directory - format is handled automatically by AMReX.
-//
 void AmrLevelAdv::writePlotFile(const std::string &dir, std::ostream &os, VisMF::How how)
 {
   AmrLevel::writePlotFile(dir, os, how);
 }
 
-//
 // Define data descriptors.
-//
-// This is how the variables in a simulation are defined.  In the case
-// of the advection equation, a single variable, phi, is defined.
-//
 void AmrLevelAdv::variableSetUp()
 {
   BL_ASSERT(desc_lst.size() == 0);
 
-  // A function which contains all processing of the settings file,
-  // setting up initial data, choice of numerical methods and
-  // boundary conditions
   read_params();
 
   const int storedGhostZones = 0;
@@ -110,20 +89,17 @@ void AmrLevelAdv::variableSetUp()
   // IndexType::TheCellType(): AMReX can support cell-centred and vertex-centred variables (cell centred here)
   // StateDescriptor::Point: Data can be a point in time, or an interval over time (point here)
   // storedGhostZones: Ghost zones can be stored (e.g. for output).  Generally set to zero.
-  // NUM_STATE: Number of variables in the variable vector (1 in the case of advection equation)
+  // NUM_STATE: Number of variables in the variable vector
   // cell_cons_interp: Controls interpolation between levels - cons_interp is good for finite volume
   desc_lst.addDescriptor(Phi_Type, IndexType::TheCellType(), StateDescriptor::Point, storedGhostZones, NUM_STATE, &cell_cons_interp);
 
-  // Set up boundary conditions, all boundaries can be set
-  // independently, including for individual variables, but lo (left) and hi (right) are useful ways to
-  // store them, for consistent access notation for the boundary
-  // locations
+  // Set up boundary condition
   int lo_bc[amrex::SpaceDim];
   int hi_bc[amrex::SpaceDim];
   // AMReX has pre-set BCs, including periodic (int_dir) and transmissive (foextrap)
   for (int i = 0; i < amrex::SpaceDim; ++i)
   {
-    lo_bc[i] = hi_bc[i] = BCType::foextrap; // changed to transmissive boundaries
+    lo_bc[i] = hi_bc[i] = BCType::foextrap; // need to make this dependent on the settings file
   }
 
   // Object for storing all the boundary conditions
@@ -135,148 +111,21 @@ void AmrLevelAdv::variableSetUp()
   // phi: Name of the variable - appears in output to identify what is being plotted
   // bc: Boundary condition object for this variable (defined above)
   // BndryFunc: Function for setting boundary conditions.  For basic BCs, AMReX can handle these automatically
-  desc_lst.setComponent(Phi_Type, 0, "rho", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 0, "density", bc, StateDescriptor::BndryFunc(nullfill));
   desc_lst.setComponent(Phi_Type, 1, "x-mom", bc, StateDescriptor::BndryFunc(nullfill));
   desc_lst.setComponent(Phi_Type, 2, "y-mom", bc, StateDescriptor::BndryFunc(nullfill));
-  desc_lst.setComponent(Phi_Type, 3, "energy", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 3, "z-mom", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 4, "energy", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 5, "x-magfield", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 6, "y-magfield", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 7, "z-magfield", bc, StateDescriptor::BndryFunc(nullfill));
+  // desc_lst.setComponent(Phi_Type, 8, "psi", bc, StateDescriptor::BndryFunc(nullfill)); // divergence cleaning variable
 }
 
-//
 // Cleanup data descriptors at end of run.
-//
 void AmrLevelAdv::variableCleanUp()
 {
   desc_lst.clear();
-}
-
-// Functions for solving Euler equations
-Real AmrLevelAdv::energy(Vector<Real> wVec) { // Calculates total energy based on vector of primitive variables
-  Real rho = wVec[0], vx = wVec[1], vy = wVec[2], p = wVec[3];
-  return p / (Gamma - 1) + 0.5 * rho * (vx * vx + vy * vy);
-}
-
-Real AmrLevelAdv::pressure(Vector<Real> uVec) { // Calculates pressure based on vector of conservative variables
-  return (Gamma - 1) * (uVec[3] - 0.5 * (uVec[1] * uVec[1] + uVec[2] * uVec[2]) / uVec[0]);
-}
-
-void AmrLevelAdv::flux(Vector<Real> uVec, Vector<Real>& fluxVec, unsigned int coord) { // Calculates flux along a given axis
-  Real p = pressure(uVec);
-  Real u1 = uVec[0], u2 = uVec[1], u3 = uVec[2], u4 = uVec[3];
-  Real momNorm = uVec[1 + coord];
-  fluxVec[0] = momNorm;
-  fluxVec[1 + coord] = momNorm * momNorm / u1 + p;
-  fluxVec[2 - coord] = u2 * u3 / u1;
-  fluxVec[3] = (u4 + p) * momNorm / u1;
-}
-
-void AmrLevelAdv::primitive(Vector<Real> uVec, Vector<Real>& wVec) { // Converts from conservative to primitive variables
-  wVec = uVec;
-  wVec[1] /= uVec[0];
-  wVec[2] /= uVec[0];
-  wVec[3] = pressure(uVec);
-}
-
-void AmrLevelAdv::conservative(Vector<Real> wVec, Vector<Real>& uVec) { // Converts from primitive to conservative variables
-  uVec = wVec;
-  uVec[1] *= wVec[0];
-  uVec[2] *= wVec[0];
-  uVec[3] = energy(wVec);
-}
-
-Real AmrLevelAdv::soundSpeed(Vector<Real> uVec) { // Calculates the acoustic sound speed based on conservative vector of variables
-  Real p = pressure(uVec);
-  return sqrt(p * Gamma / uVec[0]);
-}
-
-void AmrLevelAdv::estimateWaveSpeeds(Vector<Real> wL, Vector<Real> wR, Vector<Real>& waveSpeeds, Real cSL, Real cSR, unsigned int coord) {
-  /* Estimates HLLC wave speeds */
-  Real SL, SR, SStar, rhoL = wL[0], rhoR = wR[0], vNormL = wL[1 + coord], vNormR = wR[1 + coord], pL = wL[3], pR = wR[3];
-  SR = std::max(std::abs(vNormL) + cSL, std::abs(vNormR) + cSR);
-  SL = -SR;
-  SStar = (pR - pL + rhoL * vNormL * (SL - vNormL) - rhoR * vNormR * (SR - vNormR)) / (rhoL * (SL - vNormL) - rhoR * (SR - vNormR));
-  waveSpeeds[0] = SL;
-  waveSpeeds[1] = SStar;
-  waveSpeeds[2] = SR;
-}
-
-void AmrLevelAdv::calcUStarK(Vector<Real> wK, Real EK, Real SK, Real SStar, Vector<Real>& uStarK, unsigned int coord) {
-  /* Calculates HLLC intermediate state */
-  Real rhoK = wK[0], vNormK = wK[1 + coord], vTangK = wK[2 - coord], pK = wK[3], rhoStarK;
-  rhoStarK = rhoK * (SK - vNormK) / (SK - SStar);
-  uStarK[0] = 1.;
-  uStarK[1 + coord] = SStar;
-  uStarK[2 - coord] = vTangK;
-  uStarK[3] = EK / rhoK + (SStar - vNormK) * (SStar + pK / (rhoK * (SK - vNormK)));
-  for (int i = 0; i < NUM_STATE; i++) {
-    uStarK[i] *= rhoStarK;
-  }
-}
-
-void AmrLevelAdv::HLLCFlux(Vector<Real> uL, Vector<Real> uR, Vector<Real>& fluxVec, unsigned int coord) {
-  /* Calculates HLLC flux along a given axis */
-  Real SL, SStar, SR;
-  Vector<Real> wL{0., 0., 0.}, wR{0., 0., 0.};
-  Vector<Real> waveSpeeds{0., 0., 0.};
-  Vector<Real> uStarK{0., 0., 0., 0.};
-  primitive(uL, wL);
-  primitive(uR, wR);
-  estimateWaveSpeeds(wL, wR, waveSpeeds, soundSpeed(uL), soundSpeed(uR), coord);
-  SL = waveSpeeds[0], SStar = waveSpeeds[1], SR = waveSpeeds[2];
-  if (SL > 0.) {
-    flux(uL, fluxVec, coord);
-  }
-  else if (SL <= 0. && SStar >= 0.) {
-    flux(uL, fluxVec, coord);
-    calcUStarK(wL, uL[NUM_STATE - 1], SL, SStar, uStarK, coord);
-    for (int ii = 0; ii < NUM_STATE; ii++) {
-      fluxVec[ii] += SL * (uStarK[ii] - uL[ii]);
-    }
-  }
-  else if (SStar <= 0. && SR >= 0.) {
-    flux(uR, fluxVec, coord);
-    calcUStarK(wR, uR[NUM_STATE - 1], SR, SStar, uStarK, coord);
-    for (int ii = 0; ii < NUM_STATE; ii++) {
-      fluxVec[ii] += SR * (uStarK[ii] - uR[ii]);
-    }
-  }
-  else {
-    flux(uR, fluxVec, coord);
-  }
-}
-
-void AmrLevelAdv::reconstruct(Vector<Real> uL, Vector<Real> u0, Vector<Real> uR, Vector<Real>& u0Re_L, Vector<Real>& u0Re_R) {
-  /* Reconstruct state u0 at boundaries. uL/uR = state at the cell to the left/right of u0, u0Re_L/R = reconstructed state u0 at the left/right interfaces */
-  Real EL, E0, ER, r, xi, uDelta_i, eps = 1e-9, limDeltaL, limDeltaR;
-  EL = uL[NUM_STATE - 1];
-  E0 = u0[NUM_STATE - 1];
-  ER = uR[NUM_STATE - 1];
-  limDeltaL = E0 - EL;
-  limDeltaR = ER - E0;
-  if (std::abs(limDeltaR) < eps) {
-    xi = 0.;
-  }
-  else {
-    r = limDeltaL / limDeltaR;
-    xi = limFunc(r);
-  }
-  for (int ii = 0; ii < NUM_STATE; ii++) {
-    uDelta_i = 0.25 * xi * (uR[ii] - uL[ii]);
-    u0Re_L[ii] = u0[ii] - uDelta_i;
-    u0Re_R[ii] = u0[ii] + uDelta_i;
-  }
-}
-
-void AmrLevelAdv::halfTimeEvol(Vector<Real>& u0Re_L, Vector<Real>& u0Re_R, Real step, unsigned int coord) {
-  /* Performs half time local evolution according to the MUSCL-Hancock scheme */
-  Vector<Real> fluxVecR{0., 0., 0., 0.}, fluxVecL{0., 0., 0., 0.};
-  Real correction;
-  flux(u0Re_L, fluxVecL, coord);
-  flux(u0Re_R, fluxVecR, coord);
-  for (int ii = 0; ii < NUM_STATE; ii++) {
-    correction = 0.5 * step * (fluxVecR[ii] - fluxVecL[ii]);
-    u0Re_L[ii] -= correction;
-    u0Re_R[ii] -= correction;
-  }
 }
 
 template<typename T>
