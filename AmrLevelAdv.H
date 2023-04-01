@@ -3,6 +3,10 @@
 
 #include <AMReX_AmrLevel.H>
 #include <AMReX_FluxRegister.H>
+#include <AMReX_Array.H>
+#include "limiters.H"
+#include <array>
+#include "AmrMHD.H"
 
 #include <memory>
 #include <iostream>
@@ -12,6 +16,14 @@
 #endif
 
 using namespace amrex;
+
+extern int Gamma;
+
+enum ConsVar{RHO=0, MOM_X, MOM_Y, MOM_Z, ENE, BX, BY, BZ};
+enum PrimVar{VX=1, VY, VZ, PRE};
+
+extern typedef std::array<Real, 8> State;
+extern typedef std::array<Real, 3> Vec3;
 
 enum StateType
 {
@@ -61,7 +73,7 @@ public:
     static void variableCleanUp();
 
     template<typename T>
-    void calculateFluxes(const int i, const int j, const int k, const int iOffset, const int jOffset, const int kOffset, const Dim3 lo, Vector<Real>& uLL, Vector<Real>& uL, Vector<Real>& u0, Vector<Real>& uR, Vector<Real>& uLRe_L, Vector<Real>& uLRe_R, Vector<Real>& u0Re_L, Vector<Real>& u0Re_R, Vector<Real>& fluxVec, const T& arr, Real step, const unsigned int d);
+    void calculateFluxes(const int i, const int j, const int k, const int iOffset, const int jOffset, const int kOffset, const Dim3 lo, State& uLL, State& uL, State& u0, State& uR, State& uLRe_L, State& uLRe_R, State& u0Re_L, State& u0Re_R, State& fluxVec, const T& arr, Real step, const unsigned int d);
 
     virtual void initData() override;
     

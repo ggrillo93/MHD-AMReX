@@ -2,8 +2,6 @@
 
 using namespace amrex;
 
-typedef FixedArray<Real, 3> Vec3;
-
 // Functions for solving ideal MHD equations
 Real BSquared(State uwVec) {
   // Returns the square of the magnetic field magnitude. uwVec can be the vector of primitive or conservative variables
@@ -43,7 +41,7 @@ void flux(State uVec, State& fluxVec, unsigned int coord) { // gotta change this
   fluxVec[4] = (mom_Norm * (E + pT) - BNorm * (mom_x * Bx + mom_y * By + mom_z * Bz)) / rho;
   fluxVec[BCoord] = 0.;
   fluxVec[6 - coord] = (mom_x * By - mom_y * Bx) / rho * pow(-1, coord);
-  fluxVec[7] = (mom_Norm * Bz - BNorm * u4) / rho;
+  fluxVec[7] = (mom_Norm * Bz - BNorm * mom_z) / rho;
   // fluxVec[8] = 0.;
 }
 

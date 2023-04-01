@@ -5,14 +5,9 @@
 #include <AMReX_TagBox.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_BCUtil.H>
-#include <AMReX_FixedArray.H>
-#include "limiters.H"
 
 using namespace amrex;
 
-Real Gamma;
-Real rhoL0, vxL0, vyL0, pL0, rhoR0, vxR0, vyR0, pR0; // global variables used to set up initial conditions
-Real pi = 4. * atan(1.);
 std::function<double(double)> limFunc; // slope limiter for MUSCL-Hancock
 int orient; // allows for different tests
 int order = 2; // order = 2 uses MUSCL-Hancock, otherwise accuracy is first order
@@ -21,10 +16,12 @@ int AmrLevelAdv::verbose = 0;
 Real AmrLevelAdv::cfl = 0.8; // Default value - can be overwritten in settings file
 int AmrLevelAdv::do_reflux = 1;
 
-int AmrLevelAdv::NUM_STATE = 8;
-int AmrLevelAdv::NUM_GROW = 2;  // number of ghost cells
+State wR0, wL0; // initial states
 
-typedef FixedArray<Real, NUM_STATE> State;
+State varLim;
+
+int AmrLevelAdv::NUM_STATE = wR0.size();
+int AmrLevelAdv::NUM_GROW = 2;  // number of ghost cells
 
 // Default constructor.  Builds invalid object.
 AmrLevelAdv::AmrLevelAdv()
@@ -111,14 +108,14 @@ void AmrLevelAdv::variableSetUp()
   // phi: Name of the variable - appears in output to identify what is being plotted
   // bc: Boundary condition object for this variable (defined above)
   // BndryFunc: Function for setting boundary conditions.  For basic BCs, AMReX can handle these automatically
-  desc_lst.setComponent(Phi_Type, 0, "density", bc, StateDescriptor::BndryFunc(nullfill));
-  desc_lst.setComponent(Phi_Type, 1, "x-mom", bc, StateDescriptor::BndryFunc(nullfill));
-  desc_lst.setComponent(Phi_Type, 2, "y-mom", bc, StateDescriptor::BndryFunc(nullfill));
-  desc_lst.setComponent(Phi_Type, 3, "z-mom", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 0, "rho", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 1, "mom_x", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 2, "mom_y", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 3, "mom_z", bc, StateDescriptor::BndryFunc(nullfill));
   desc_lst.setComponent(Phi_Type, 4, "energy", bc, StateDescriptor::BndryFunc(nullfill));
-  desc_lst.setComponent(Phi_Type, 5, "x-magfield", bc, StateDescriptor::BndryFunc(nullfill));
-  desc_lst.setComponent(Phi_Type, 6, "y-magfield", bc, StateDescriptor::BndryFunc(nullfill));
-  desc_lst.setComponent(Phi_Type, 7, "z-magfield", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 5, "Bx", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 6, "By", bc, StateDescriptor::BndryFunc(nullfill));
+  desc_lst.setComponent(Phi_Type, 7, "Bz", bc, StateDescriptor::BndryFunc(nullfill));
   // desc_lst.setComponent(Phi_Type, 8, "psi", bc, StateDescriptor::BndryFunc(nullfill)); // divergence cleaning variable
 }
 
@@ -129,7 +126,7 @@ void AmrLevelAdv::variableCleanUp()
 }
 
 template<typename T>
-void AmrLevelAdv::calculateFluxes(const int i, const int j, const int k, const int iOffset, const int jOffset, const int kOffset, const Dim3 lo, Vector<Real>& uLL, Vector<Real>& uL, Vector<Real>& u0, Vector<Real>& uR, Vector<Real>& uLRe_L, Vector<Real>& uLRe_R, Vector<Real>& u0Re_L, Vector<Real>& u0Re_R, Vector<Real>& fluxVec, const T& arr, Real step, const unsigned int d) {
+void AmrLevelAdv::calculateFluxes(const int i, const int j, const int k, const int iOffset, const int jOffset, const int kOffset, const Dim3 lo, State& uLL, State& uL, State& u0, State& uR, State& uLRe_L, State& uLRe_R, State& u0Re_L, State& u0Re_R, State& fluxVec, const T& arr, Real step, const unsigned int d) {
   /* Calculates intercell flux at the left boundary of cell u0 */
   if ((d == 0 && i == lo.x) || (d == 1 && j == lo.y)) { 
     for (int ii = 0; ii < NUM_STATE; ii++) {
@@ -138,8 +135,8 @@ void AmrLevelAdv::calculateFluxes(const int i, const int j, const int k, const i
       u0[ii] = arr(i, j, k, ii);
       uR[ii] = arr(i + iOffset, j + jOffset, k + kOffset, ii);
     }
-    reconstruct(uLL, uL, u0, uLRe_L, uLRe_R);
-    reconstruct(uL, u0, uR, u0Re_L, u0Re_R);
+    reconstruct(uLL, uL, u0, uLRe_L, uLRe_R, varLim);
+    reconstruct(uL, u0, uR, u0Re_L, u0Re_R, varLim);
     if (order == 2) {
       halfTimeEvol(uLRe_L, uLRe_R, step, d);
       halfTimeEvol(u0Re_L, u0Re_R, step, d);
@@ -153,7 +150,7 @@ void AmrLevelAdv::calculateFluxes(const int i, const int j, const int k, const i
     for (int ii = 0; ii < NUM_STATE; ii++) {
       uR[ii] = arr(i + iOffset, j + jOffset, k + kOffset, ii);
     }
-    reconstruct(uL, u0, uR, u0Re_L, u0Re_R);
+    reconstruct(uL, u0, uR, u0Re_L, u0Re_R, varLim);
     if (order == 2) {
       halfTimeEvol(u0Re_L, u0Re_R, step, d);
     }
@@ -161,14 +158,11 @@ void AmrLevelAdv::calculateFluxes(const int i, const int j, const int k, const i
   HLLCFlux(uLRe_R, u0Re_L, fluxVec, d);
 }
 
-//
 // Initialize grid data at problem start-up.
-//
 void AmrLevelAdv::initData()
 {
-  //
+  
   // Loop over grids, call FORTRAN function to init with data.
-  //
   const Real *dx = geom.CellSize();
   // Position of the bottom left corner of the domain
   const Real *prob_lo = geom.ProbLo();
@@ -176,15 +170,12 @@ void AmrLevelAdv::initData()
   MultiFab &S_new = get_new_data(Phi_Type);
   Real cur_time = state[Phi_Type].curTime();
 
-  // amrex::Print works like std::cout, but in parallel only prints from the root processor
   if (verbose)
   {
     amrex::Print() << "Initializing the data at level " << level << std::endl;
   }
 
-  // Slightly messy way to ensure uninitialised data is not used.
-  // AMReX has an XDim3 object, but a function needs to be written to
-  // convert Real* to XDim3
+  // Ensure uninitialised data is not used.
   const Real dX = dx[0];
   const Real dY = (amrex::SpaceDim > 1 ? dx[1] : 0.0);
   const Real dZ = (amrex::SpaceDim > 2 ? dx[2] : 0.0);
@@ -193,13 +184,10 @@ void AmrLevelAdv::initData()
   const Real probLoY = (amrex::SpaceDim > 1 ? prob_lo[1] : 0.0);
   const Real probLoZ = (amrex::SpaceDim > 2 ? prob_lo[2] : 0.0);
 
-  Vector<Real> wR{rhoR0, vxR0, vyR0, pR0};
-  Vector<Real> wL{rhoL0, vxL0, vyL0, pL0};
-
   Real var;
-
-  Real EL = energy(wL);
-  Real ER = energy(wR);
+  State uL0, uR0;
+  conservative(wL0, uL0);
+  conservative(wR0, uR0);
 
   // Loop over all the patches at this level
   for (MFIter mfi(S_new); mfi.isValid(); ++mfi)
@@ -219,29 +207,27 @@ void AmrLevelAdv::initData()
         for (int i = lo.x; i <= hi.x; i++)
         {
           const Real x = probLoX + (double(i) + 0.5) * dX;
-          if (orient == 1) {
+          if (orient == 1) { // divide states along line x = 0.5
             var = x;
           }
-          else if (orient == 2) {
+          else if (orient == 2) { // divide states along line y = 0.5
             var = y;
           }
-          else if (orient == 3) {
+          else if (orient == 3) { // divide states along line x + y = 0.5
             var = x + y - 0.5;
           }
-          else if (orient == 4) {
+          else if (orient == 4) { // divide states along circle of radius 1
             var = (x - 1) * (x - 1) + (y - 1) * (y - 1) + 0.34; // cylindrical explosion
           }
           if (var < 0.5) {
-            arr(i, j, k, 0) = rhoL0;
-            arr(i, j, k, 1) = rhoL0 * vxL0;
-            arr(i, j, k, 2) = rhoL0 * vyL0;
-            arr(i, j, k, 3) = EL;
+            for (int ii = 0; ii < NUM_STATE; ii++) {
+              arr(i, j, k, ii) = uL0[ii];
+            }
           }
           else {
-            arr(i, j, k, 0) = rhoR0;
-            arr(i, j, k, 1) = rhoR0 * vxR0;
-            arr(i, j, k, 2) = rhoR0 * vyR0;
-            arr(i, j, k, 3) = ER;
+            for (int ii = 0; ii < NUM_STATE; ii++) {
+              arr(i, j, k, ii) = uR0[ii];
+            }
           }
         }
       }
@@ -254,17 +240,13 @@ void AmrLevelAdv::initData()
   }
 }
 
-//
 // Initialize data on this level from another AmrLevelAdv (during regrid).
-// These are standard AMReX commands which are unlikely to need altering
-//
 void AmrLevelAdv::init(AmrLevel &old)
 {
 
   AmrLevelAdv *oldlev = (AmrLevelAdv *)&old;
-  //
+  
   // Create new grid data by fillpatching from old.
-  //
   Real dt_new = parent->dtLevel(level);
   Real cur_time = oldlev->state[Phi_Type].curTime();
   Real prev_time = oldlev->state[Phi_Type].prevTime();
@@ -285,22 +267,9 @@ void AmrLevelAdv::init(AmrLevel &old)
   // 0: This is the first data index that is to be copied
   // NUM_STATE: This is the number of states to be copied
   FillPatch(old, S_new, zeroGhosts, cur_time, Phi_Type, 0, NUM_STATE);
-
-  // Note: In this example above, the all states in Phi_Type (which is
-  // only 1 to start with) are being copied.  However, the FillPatch
-  // command could be used to create a velocity vector from a
-  // primitive variable vector.  In this case, the `0' argument is
-  // replaced with the position of the first velocity component in the
-  // primitive variable vector, and the NUM_STATE arguement with the
-  // dimensionality - this argument is the number of variables that
-  // are being filled/copied, and NOT the position of the final
-  // component in e.g. the primitive variable vector.
 }
 
-//
 // Initialize data on this level after regridding if old level did not previously exist
-// These are standard AMReX commands which are unlikely to need altering
-//
 void AmrLevelAdv::init()
 {
   Real dt = parent->dtLevel(level);
@@ -312,33 +281,15 @@ void AmrLevelAdv::init()
   setTimeLevel(cur_time, dt_old, dt);
   MultiFab &S_new = get_new_data(Phi_Type);
 
-  // See first init function for documentation
   FillCoarsePatch(S_new, 0, cur_time, Phi_Type, 0, NUM_STATE);
 }
 
-//
 // Advance grids at this level in time.
-//  This function is the one that actually calls the flux functions.
-//
-Real AmrLevelAdv::advance(Real time,
-                          Real dt,
-                          int iteration,
-                          int ncycle)
+Real AmrLevelAdv::advance(Real time, Real dt, int iteration, int ncycle)
 {
 
   MultiFab &S_mm = get_new_data(Phi_Type);
 
-  // Note that some useful commands exist - the maximum and minumum
-  // values on the current level can be computed directly - here the
-  // max and min of variable 0 are being calculated, and output.
-  // Real maxval = S_mm.max(0);
-  // Real minval = S_mm.min(0);
-  // amrex::Print() << "phi max = " << maxval << ", min = " << minval << std::endl;
-
-  // This ensures that all data computed last time step is moved from
-  // `new' data to `old data' - this should not need changing If more
-  // than one type of data were declared in variableSetUp(), then the
-  // loop ensures that all of it is updated appropriately
   for (int k = 0; k < NUM_STATE_TYPE; k++)
   {
     state[k].allocOldData();
@@ -355,9 +306,7 @@ Real AmrLevelAdv::advance(Real time,
   const Real *dx = geom.CellSize();
   const Real *prob_lo = geom.ProbLo();
 
-  //
   // Get pointers to Flux registers, or set pointer to zero if not there.
-  //
   FluxRegister *fine = 0;
   FluxRegister *current = 0;
 
@@ -398,13 +347,13 @@ Real AmrLevelAdv::advance(Real time,
 
   // State with ghost cells - this is used to compute fluxes and perform the update.
   MultiFab Sborder(grids, dmap, NUM_STATE, NUM_GROW);
-  // See init function for details about the FillPatch function
+  
   FillPatch(*this, Sborder, NUM_GROW, time, Phi_Type, 0, NUM_STATE);
   // Fill periodic boundaries where they exist.  More accurately, the
   // FillBoundary call will fill overlapping boundaries (with periodic
   // domains effectively being overlapping).  It also takes care of
   // AMR patch and CPU boundaries.
-  Sborder.FillBoundary(geom.periodicity()); // not sure if I need to change this
+  Sborder.FillBoundary(geom.periodicity());
 
   Vector<BCRec> bc(NUM_STATE); // copied from AmReX documentation
   for (int n = 0; n < NUM_STATE; ++n)
@@ -426,18 +375,8 @@ Real AmrLevelAdv::advance(Real time,
 
   FillDomainBoundary(Sborder, geom, bc);
 
-  // Initialize flux vector
-  Vector<Real> fluxVec{0., 0., 0., 0.};
-
-  // Initialize reconstruction variables
-  Vector<Real> uLL{0., 0., 0., 0.};
-  Vector<Real> uL{0., 0., 0., 0.};
-  Vector<Real> u0{0., 0., 0., 0.};
-  Vector<Real> uR{0., 0., 0., 0.};
-  Vector<Real> uLRe_L{0., 0., 0, 0.};
-  Vector<Real> uLRe_R{0., 0., 0., 0.};
-  Vector<Real> u0Re_L{0., 0., 0., 0.};
-  Vector<Real> u0Re_R{0., 0., 0., 0.};
+  // Initialize necessary state vectors
+  State fluxVec, uLL, uL, u0, uR, uLRe_L, uLRe_R, u0Re_L, u0Re_R;
 
   for (unsigned int d = 0; d < amrex::SpaceDim; d++)
   {
@@ -474,7 +413,7 @@ Real AmrLevelAdv::advance(Real time,
           }
         }
       }
-      else { // need to reverse the loops to be able to copy cell states in our flux calculation
+      else { // need to reverse the loops to be able to copy cell states in our flux calculation. Will need to do this again for 3D
         for (int k = lo.z; k <= hi.z + kOffset; k++) {
           for (int i = lo.x; i <= hi.x + iOffset; i++) {
             for (int j = lo.y; j <= hi.y + jOffset; j++) {
@@ -490,7 +429,6 @@ Real AmrLevelAdv::advance(Real time,
       for (int k = lo.z; k <= hi.z; k++) {
         for (int j = lo.y; j <= hi.y; j++) {
           for (int i = lo.x; i <= hi.x; i++) {
-            // Conservative update formula
             for (int ii = 0; ii < NUM_STATE; ii++) {
               arr(i, j, k, ii) = arr(i, j, k, ii) - step * (fluxArr(i + iOffset, j + jOffset, k + kOffset, ii) - fluxArr(i, j, k, ii));
             }
@@ -500,7 +438,6 @@ Real AmrLevelAdv::advance(Real time,
     }
 
     // We need to compute boundary conditions again after each update
-
     FillDomainBoundary(Sborder, geom, bc);
 
     Sborder.FillBoundary(geom.periodicity());
@@ -522,7 +459,6 @@ Real AmrLevelAdv::advance(Real time,
       // The mult function automatically multiplies entries in a multifab by a scalar
       // scaleFactor: The scalar to multiply by
       // 0: The first data index in the multifab to multiply
-      // NUM_STATE:  The total number of data indices that will be multiplied
       fluxes[d].mult(scaleFactor, 0, NUM_STATE);
     }
   }
@@ -534,27 +470,23 @@ Real AmrLevelAdv::advance(Real time,
   // Third entry: Starting variable in the source array to be copied (the zeroth variable in this case)
   // Fourth entry: Starting variable in the destination array to receive the copy (again zeroth here)
   // NUM_STATE: Total number of variables being copied
-  // Sixth entry: Number of ghost cells to be included in the copy (zero in this case, since only real
-  //              data is needed for S_new)
+  // Sixth entry: Number of ghost cells to be included in the copy (zero in this case, since only real data is needed for S_new)
   MultiFab::Copy(S_new, Sborder, 0, 0, NUM_STATE, 0);
 
-  // Refluxing at patch boundaries.  Amrex automatically does this
-  // where needed, but you need to state a few things to make sure it
-  // happens correctly:
+  // Refluxing at patch boundaries
   // FineAdd: If we are not on the coarsest level, the fluxes at this level will form part of the correction
   //          to a coarse level
   // CrseInit:  If we are not the finest level, the fluxes at patch boundaries need correcting.  Since we
   //            know that the coarse level happens first, we initialise the boundary fluxes through this
   //            function, and subsequently FineAdd will modify things ready for the correction
   // Both functions have the same arguments:
-  // First: Name of the flux MultiFab (this is done dimension-by-dimension
+  // First: Name of the flux MultiFab (this is done dimension-by-dimension)
   // Second: Direction, to ensure the correct vertices are being corrected
   // Third: Source component - the first entry of the flux MultiFab that is to be copied (it is possible that
-  //        some variables will not need refluxing, or will be computed elsewhere (not in this example though)
-  // Fourth: Destinatinon component - the first entry of the flux register that this call to FineAdd sends to
+  //        some variables will not need refluxing, or will be computed elsewhere
+  // Fourth: Destination component - the first entry of the flux register that this call to FineAdd sends to
   // Fifth: NUM_STATE - number of states being added to the flux register
-  // Sixth: Multiplier - in general, the least accurate (coarsest) flux is subtracted (-1) and the most
-  //        accurate (finest) flux is added (+1)
+  // Sixth: Multiplier - in general, the least accurate (coarsest) flux is subtracted (-1) and the most accurate (finest) flux is added (+1)
   if (do_reflux)
   {
     if (current)
@@ -572,26 +504,20 @@ Real AmrLevelAdv::advance(Real time,
   return dt;
 }
 
-//
 // Estimate time step.
-// This function is called by all of the other time step functions in AMReX, and is the only one that should
-// need modifying
-//
+// This function is called by all of the other time step functions in AMReX
 Real AmrLevelAdv::estTimeStep(Real)
 {
   // This is just a dummy value to start with
   Real dt_est = 1.0e+20;
-  Vector<Real> uVec{0., 0., 0., 0.}; // initialize uVec to pass to soundSpeed
+  State uVec, wVec;
 
   const Real *dx = geom.CellSize();
   const Real *prob_lo = geom.ProbLo();
   const Real cur_time = state[Phi_Type].curTime();
   MultiFab &S_new = get_new_data(Phi_Type);
-  // MultiFab Sborder(grids, dmap, NUM_STATE, 0);
 
-  // FillPatch(*this, Sborder, 0, cur_time, Phi_Type, 0, NUM_STATE);
-
-  Real velMag = 0., vx, vy, v;
+  Real maxSpeed, vx, vy, vz, v;
   
   for (MFIter mfi(S_new, true); mfi.isValid(); ++mfi)
     {
@@ -611,10 +537,9 @@ Real AmrLevelAdv::estTimeStep(Real)
             for (int ii = 0; ii < NUM_STATE; ii++) {
               uVec[ii] = arr(i, j, k, ii);
             }
-            vx = uVec[1] / uVec[0];
-            vy = uVec[2] / uVec[0];
-            v = sqrt(vx * vx + vy * vy);
-            velMag = std::max(velMag, soundSpeed(uVec) + v);
+            maxSpeed = std::max(maxSpeed, fastSpeed(uVec, 0) + std::abs(uVec[MOM_X]) / uVec[RHO]);
+            maxSpeed = std::max(maxSpeed, fastSpeed(uVec, 1) + std::abs(uVec[MOM_Y]) / uVec[RHO]);
+            maxSpeed = std::max(maxSpeed, fastSpeed(uVec, 2) + std::abs(uVec[MOM_Z]) / uVec[RHO]);
           }
         }
       }
@@ -622,7 +547,7 @@ Real AmrLevelAdv::estTimeStep(Real)
 
   for (unsigned int d = 0; d < amrex::SpaceDim; ++d)
   {
-    dt_est = std::min(dt_est, dx[d] / velMag);
+    dt_est = std::min(dt_est, dx[d] / maxSpeed);
   }
 
   // Ensure that we really do have the minimum across all processors
@@ -631,37 +556,22 @@ Real AmrLevelAdv::estTimeStep(Real)
 
   if (verbose)
   {
-    amrex::Print() << "AmrLevelAdv::estTimeStep at level " << level
-                   << ":  dt_est = " << dt_est << std::endl;
+    amrex::Print() << "AmrLevelAdv::estTimeStep at level " << level << ":  dt_est = " << dt_est << std::endl;
   }
 
   return dt_est;
 }
 
-//
 // Compute initial time step.
-//
 Real AmrLevelAdv::initialTimeStep()
 {
   return estTimeStep(0.0);
 }
 
-//
-// Compute initial `dt'.
-//
-void AmrLevelAdv::computeInitialDt(int finest_level,
-                                   int sub_cycle,
-                                   Vector<int> &n_cycle,
-                                   const Vector<IntVect> &ref_ratio,
-                                   Vector<Real> &dt_level,
-                                   Real stop_time)
+// Compute initial dt
+void AmrLevelAdv::computeInitialDt(int finest_level, int sub_cycle, Vector<int> &n_cycle, const Vector<IntVect> &ref_ratio, Vector<Real> &dt_level, Real stop_time)
 {
-  //
   // Grids have been constructed, compute dt for all levels.
-  //
-  // AMReX's AMR Level mode assumes that the time step only needs
-  // calculating on the coarsest level - all subsequent time steps are
-  // reduced by the refinement factor
   if (level > 0)
     return;
 
@@ -675,9 +585,7 @@ void AmrLevelAdv::computeInitialDt(int finest_level,
     dt_0 = std::min(dt_0, n_factor * dt_level[i]);
   }
 
-  //
   // Limit dt's by the value of stop_time.
-  //
   const Real eps = 0.001 * dt_0;
   Real cur_time = state[Phi_Type].curTime();
   if (stop_time >= 0.0)
@@ -694,22 +602,11 @@ void AmrLevelAdv::computeInitialDt(int finest_level,
   }
 }
 
-//
-// Compute new `dt'.
-//
-void AmrLevelAdv::computeNewDt(int finest_level,
-                               int sub_cycle,
-                               Vector<int> &n_cycle,
-                               const Vector<IntVect> &ref_ratio,
-                               Vector<Real> &dt_min,
-                               Vector<Real> &dt_level,
-                               Real stop_time,
-                               int post_regrid_flag)
+// Compute new dt
+void AmrLevelAdv::computeNewDt(int finest_level, int sub_cycle, Vector<int> &n_cycle, const Vector<IntVect> &ref_ratio, Vector<Real> &dt_min, Vector<Real> &dt_level, Real stop_time, int post_regrid_flag)
 {
-  //
   // We are at the end of a coarse grid timecycle.
   // Compute the timesteps for the next iteration.
-  //
   if (level > 0)
     return;
 
@@ -723,15 +620,11 @@ void AmrLevelAdv::computeNewDt(int finest_level,
     dt_min[i] = adv_level.estTimeStep(dt_level[i]);
   }
 
-  // A couple of things are implemented to ensure that time step's
-  // don't suddenly grow by a lot, as this could lead to errors - for
-  // sensible mesh refinement choices, these shouldn't really change
-  // anything
+  // A couple of things are implemented to ensure that timesteps
+  // don't suddenly grow by a lot, as this could lead to errors
   if (post_regrid_flag == 1)
   {
-    //
     // Limit dt's by pre-regrid dt
-    //
     for (int i = 0; i <= finest_level; i++)
     {
       dt_min[i] = std::min(dt_min[i], dt_level[i]);
@@ -739,9 +632,7 @@ void AmrLevelAdv::computeNewDt(int finest_level,
   }
   else
   {
-    //
     // Limit dt's by change_max * old dt
-    //
     static Real change_max = 1.1;
     for (int i = 0; i <= finest_level; i++)
     {
@@ -749,9 +640,7 @@ void AmrLevelAdv::computeNewDt(int finest_level,
     }
   }
 
-  //
   // Find the minimum over all levels
-  //
   Real dt_0 = 1.0e+100;
   int n_factor = 1;
   for (int i = 0; i <= finest_level; i++)
@@ -760,9 +649,7 @@ void AmrLevelAdv::computeNewDt(int finest_level,
     dt_0 = std::min(dt_0, n_factor * dt_min[i]);
   }
 
-  //
-  // Limit dt's by the value of stop_time.
-  //
+  // Limit dt's by the value of stop_time
   const Real eps = 0.001 * dt_0;
   Real cur_time = state[Phi_Type].curTime();
   if (stop_time >= 0.0)
@@ -779,17 +666,13 @@ void AmrLevelAdv::computeNewDt(int finest_level,
   }
 }
 
-//
 // Do work after timestep().
 // If something has to wait until all processors have done their advance function, the post_timestep function
 // is the place to put it.  Refluxing and averaging down are two standard examples for AMR
-//
 void AmrLevelAdv::post_timestep(int iteration)
 {
-  //
   // Integration cycle on fine level grids is complete
   // do post_timestep stuff here.
-  //
   int finest_level = parent->finestLevel();
 
   if (do_reflux && level < finest_level)
@@ -799,51 +682,31 @@ void AmrLevelAdv::post_timestep(int iteration)
     avgDown();
 }
 
-//
 // Do work after regrid().
-// Nothing normally needs doing here, but if something was calculated on a per-patch basis, new patches might
-// this to be calcuated immediately
-//
 void AmrLevelAdv::post_regrid(int lbase, int new_finest)
 {
 }
 
-//
 // Do work after a restart().
-// Similar to post_regrid, nothing normally needs doing here
-//
 void AmrLevelAdv::post_restart()
 {
 }
 
-//
 // Do work after init().
-// Once new patches have been initialised, work may need to be done to ensure consistency, for example,
-// averaging down - though for linear interpolation, this probably won't change anything
-//
 void AmrLevelAdv::post_init(Real stop_time)
 {
   if (level > 0)
     return;
-  //
   // Average data down from finer levels
   // so that conserved data is consistent between levels.
-  //
   int finest_level = parent->finestLevel();
   for (int k = finest_level - 1; k >= 0; k--)
     getLevel(k).avgDown();
 }
 
-//
 // Error estimation for regridding.
 //  Determine which parts of the domain need refinement
-//
-void AmrLevelAdv::errorEst(TagBoxArray &tags,
-                           int clearval,
-                           int tagval,
-                           Real time,
-                           int n_error_buf,
-                           int ngrow)
+void AmrLevelAdv::errorEst(TagBoxArray &tags, int clearval, int tagval, Real time, int n_error_buf, int ngrow)
 {
   const Real *dx = geom.CellSize();
   const Real *prob_lo = geom.ProbLo();
@@ -882,10 +745,6 @@ void AmrLevelAdv::errorEst(TagBoxArray &tags,
     // An AMReX construction, effectively a boolean array which is true in positions that are valid for refinement
     TagBox &tagfab = tags[mfi];
 
-    // Traditionally, a lot of the array-based operations in AMReX happened in Fortran.  The standard template
-    // for these is short and easy to read, flagging on values or gradients (first order calculation)
-    // We cannot pass tagfab to Fortran becuase it is BaseFab<char>.
-    // So we are going to get a temporary integer array.
     tagfab.get_itags(itags, tilebx);
 
     // data pointer and index space
@@ -893,7 +752,6 @@ void AmrLevelAdv::errorEst(TagBoxArray &tags,
     const int *tlo = tilebx.loVect();
     const int *thi = tilebx.hiVect();
 
-    // Various macros exist to convert the C++ data structures to Fortran
     state_error(tptr, AMREX_ARLIM_3D(tlo), AMREX_ARLIM_3D(thi),
                 BL_TO_FORTRAN_3D(Sborder[mfi]),
                 &tagval, &clearval,
@@ -901,14 +759,11 @@ void AmrLevelAdv::errorEst(TagBoxArray &tags,
                 AMREX_ZFILL(dx), AMREX_ZFILL(prob_lo), &time, &level);
 
     // Now update the tags in the TagBox.
-    //
     tagfab.tags_and_untags(itags, tilebx);
   }
 }
 
-//
 // This function reads the settings file
-//
 void AmrLevelAdv::read_params()
 {
   // Make sure that this is only done once
@@ -933,45 +788,44 @@ void AmrLevelAdv::read_params()
   pp.query("cfl", cfl);
   pp.query("do_reflux", do_reflux);
 
-  // Initial Euler states + gamma
+  Vector<Real> wL0Help, wR0Help;
   pp.get("Gamma", Gamma);
-  pp.get("rhoL", rhoL0);
-  pp.get("vxL", vxL0);
-  pp.get("vyL", vyL0);
-  pp.get("pL", pL0);
-  pp.get("rhoR", rhoR0);
-  pp.get("vxR", vxR0);
-  pp.get("vyR", vyR0);
-  pp.get("pR", pR0);
+  pp.getarr("wL0", wL0Help);
+  pp.getarr("wR0", wR0Help);
+  for (int i = 0; i < NUM_STATE; i++) {
+    wL0[i] = wL0Help[i];
+    wR0[i] = wR0Help[i];
+  }
   pp.get("orientation", orient);
-  // pp.get("order", order);
   if (order == 1) {
     limFunc = forcezero; // no reconstruction performed in the first order case
   }
   else {
     limFunc = minbee;
   }
+  std::string limiting;
+  pp.get("limiting", limiting);
+  if (limiting == "E") {
+    for (int i = 0; i < NUM_STATE; i++) {
+      varLim[i] = ENE;
+    }
+  }
+  else {
+    for (int i = 0; i < NUM_STATE; i++) {
+      varLim[i] = i;
+    }
+  }
 
-  // Vector variables can be read in; these require e.g.\ pp.queryarr
-  // and pp.getarr, so that the ParmParse object knows to look for
-  // more than one variable
-
-  // Geometries can be Cartesian, cylindrical or spherical - some
-  // functions (e.g. divergence in linear solvers) are coded with this
-  // geometric dependency
   Geometry const *gg = AMReX::top()->getDefaultGeometry();
 
-  // This tutorial code only supports Cartesian coordinates.
   if (!gg->IsCartesian())
   {
     amrex::Abort("Please set geom.coord_sys = 0");
   }
 
-  //
   // read tagging parameters from probin file
-  //
   // Tradtionally, the inputs file with ParmParse functionality is handled by C++.  However, a Fortran settings
-  // file, by default named probin, can also supply variables.  Mostly used for mesh refinement (tagging) critera
+  // file, by default named probin, can also supply variables.  Mostly used for mesh refinement (tagging) criteria
   std::string probin_file("probin");
 
   ParmParse ppa("amr");
@@ -988,13 +842,10 @@ void AmrLevelAdv::read_params()
   get_tagging_params(probin_file_name.dataPtr(), &probin_file_length);
 }
 
-//
 // AMReX has an inbuilt reflux command, but we still have the freedom
 // to decide what goes into it (for example, which variables are
 // actually refluxed).  This also gives a little flexibility as to
-// where flux registers are stored.  In this example, they are stored
-// on levels [1,fine] but not level 0.
-//
+// where flux registers are stored
 void AmrLevelAdv::reflux()
 {
   BL_ASSERT(level < parent->finestLevel());
@@ -1014,14 +865,11 @@ void AmrLevelAdv::reflux()
 
     ParallelDescriptor::ReduceRealMax(end, IOProc);
 
-    amrex::Print() << "AmrLevelAdv::reflux() at level " << level
-                   << " : time = " << end << std::endl;
+    amrex::Print() << "AmrLevelAdv::reflux() at level " << level << " : time = " << end << std::endl;
   }
 }
 
-//
 // Generic function for averaging down - in this case it just makes sure it doesn't happen on the finest level
-//
 void AmrLevelAdv::avgDown()
 {
   if (level == parent->finestLevel())
@@ -1032,18 +880,13 @@ void AmrLevelAdv::avgDown()
   avgDown(Phi_Type);
 }
 
-//
 // Setting up the call to the AMReX-implemented average down function
-//
 void AmrLevelAdv::avgDown(int state_indx)
 {
   // For safety, again make sure this only happens if a finer level exists
   if (level == parent->finestLevel())
     return;
 
-  // You can access data at other refinement levels, use this to
-  // specify your current data, and the finer data that is to be
-  // averaged down
   AmrLevelAdv &fine_lev = getLevel(level + 1);
   MultiFab &S_fine = fine_lev.get_new_data(state_indx);
   MultiFab &S_crse = get_new_data(state_indx);
@@ -1056,7 +899,5 @@ void AmrLevelAdv::avgDown(int state_indx)
   // 0: First variable to be averaged (as not all variables need averaging down
   // S_fine.nComp(): Number of variables to average - this can be computed automatically from a multifab
   // refRatio: The refinement ratio between this level and the finer level
-  amrex::average_down(S_fine, S_crse,
-                      fine_lev.geom, geom,
-                      0, S_fine.nComp(), parent->refRatio(level));
+  amrex::average_down(S_fine, S_crse, fine_lev.geom, geom, 0, S_fine.nComp(), parent->refRatio(level));
 }

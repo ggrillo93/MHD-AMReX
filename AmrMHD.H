@@ -1,8 +1,6 @@
 #include "AmrLevelAdv.H"
-#include "AmrLevelAdv.cpp"
 
-enum ConsVar{RHO=0, MOM_X, MOM_Y, MOM_Z, ENE, BX, BY, BZ};
-enum PrimVar{RHO=0, VX, VY, VZ, PRE, BX, BY, BZ};
+using namespace amrex;
 
 Real BSquared(State uwVec);
 Real energy(State wVec);

@@ -16,7 +16,6 @@ int
 main (int   argc,
       char* argv[])
 {
-    enable_floating_point_exceptions();
     amrex::Initialize(argc,argv);
 
     Real dRunTime1 = amrex::second();
