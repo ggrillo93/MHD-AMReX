@@ -21,8 +21,8 @@ Real pressure(State uVec) {
   // Calculates pressure based on vector of conservative variables
   Real rho = uVec[RHO], mom_x = uVec[MOM_X], mom_y = uVec[MOM_Y], mom_z = uVec[MOM_Z];
   Real B2 = BSquared(uVec);
-  Real v2 = (mom_x * mom_x + mom_y * mom_y + mom_z * mom_z) / rho;
-  return (Gamma - 1) * (uVec[ENE] - 0.5 * (v2 + B2));
+  Real KE = (mom_x * mom_x + mom_y * mom_y + mom_z * mom_z) / rho;
+  return (Gamma - 1) * (uVec[ENE] - 0.5 * (KE + B2));
 }
 
 void flux(State uVec, State& fluxVec, unsigned int coord) { // gotta change this for 3D
@@ -38,7 +38,7 @@ void flux(State uVec, State& fluxVec, unsigned int coord) { // gotta change this
   fluxVec[1] = mom_x * mom_Norm / rho - Bx * BNorm;
   fluxVec[2] = mom_y * mom_Norm / rho - By * BNorm;
   fluxVec[vCoord] += pT;
-  fluxVec[3] = E * mom_Norm / rho - Bz * BNorm;
+  fluxVec[3] = mom_z * mom_Norm / rho - Bz * BNorm;
   fluxVec[4] = (mom_Norm * (E + pT) - BNorm * (mom_x * Bx + mom_y * By + mom_z * Bz)) / rho;
   fluxVec[BCoord] = 0.;
   fluxVec[6 - coord] = (mom_x * By - mom_y * Bx) / rho * pow(-1, coord);
@@ -68,7 +68,7 @@ void conservative(State wVec, State& uVec) {
 
 Real fastSpeed(State uVec, unsigned int coord) {
   // Calculates the magnetoacoustic fast speed based on conservative vector of variables
-  Real p = pressure(uVec), rho = uVec[RHO], Bx = uVec[BX], By = uVec[BY], Bz = uVec[BZ];
+  Real p = pressure(uVec), rho = uVec[RHO];
   Real B2 = BSquared(uVec);
   Real c_a2 = B2 / rho;
   Real c_s2 = Gamma * p / rho;
@@ -80,15 +80,18 @@ Real fastSpeed(State uVec, unsigned int coord) {
 void estimateWaveSpeeds(State wL, State wR, Vec3& waveSpeeds, unsigned int coord) {
   /* Estimates HLLC wave speeds */
   Real SL, SR, SStar, maxFast;
+  State uL, uR;
+  conservative(wL, uL);
+  conservative(wR, uR);
   unsigned int vCoord = 1 + coord, BCoord = 5 + coord;
-  Real rhoL = wL[RHO], vNormL = wL[vCoord], pL = wL[PRE], BxL = wL[BX], ByL = wL[BY], BzL = wL[BZ]; 
-  Real rhoR = wR[RHO], vNormR = wR[vCoord], pR = wR[PRE], BxR = wR[BX], ByR = wR[BY], BzR = wR[BZ];
+  Real rhoL = wL[RHO], vNormL = wL[vCoord], pL = wL[PRE]; 
+  Real rhoR = wR[RHO], vNormR = wR[vCoord], pR = wR[PRE];
   Real BNormR = wR[BCoord], BNormL = wL[BCoord];
   Real B2R = BSquared(wR);
   Real B2L = BSquared(wL);
   Real pModL = pL + 0.5 * B2L - BNormL * BNormL;
   Real pModR = pR + 0.5 * B2R - BNormR * BNormR;
-  maxFast = std::max(fastSpeed(wL, coord), fastSpeed(wR, coord));
+  maxFast = std::max(fastSpeed(uL, coord), fastSpeed(uR, coord));
   SL = std::min(vNormL, vNormR) - maxFast;
   SR = std::max(vNormL, vNormR) + maxFast;
   SStar = (rhoR * vNormR * (SR - vNormR) - rhoL * vNormL * (SL - vNormL) + pModL - pModR) / (rhoR * (SR - vNormR) - rhoL * (SL - vNormL));
@@ -120,7 +123,7 @@ void calcUStarK(State wK, State wHLL, Real EK, Real SK, Real SStar, State& uStar
 void HLLCFlux(State uL, State uR, State& fluxVec, unsigned int coord) {
   /* Calculates HLLC flux along a given axis */
   Real SL, SStar, SR;
-  State wL, wR, uStarK, fluxL, fluxR, uHLL, wHLL;
+  State wL, wR;
   Vec3 waveSpeeds;
   primitive(uL, wL);
   primitive(uR, wR);
@@ -130,6 +133,7 @@ void HLLCFlux(State uL, State uR, State& fluxVec, unsigned int coord) {
     flux(uL, fluxVec, coord);
   }
   else if ((SStar >= 0) || (SStar <= 0. && SR >= 0.)) {
+    State uStarK, fluxL, fluxR, uHLL, wHLL;
     flux(uL, fluxL, coord);
     flux(uR, fluxR, coord);
     for (int i = 0; i < (int) uL.size(); i++) {

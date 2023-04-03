@@ -13,7 +13,7 @@ Real Gamma;
 int orient; // allows for different tests
 int order = 2; // order = 2 uses MUSCL-Hancock, otherwise accuracy is first order
 
-int AmrLevelAdv::verbose = 0;
+int AmrLevelAdv::verbose = 1;
 Real AmrLevelAdv::cfl = 0.8; // Default value - can be overwritten in settings file
 int AmrLevelAdv::do_reflux = 1;
 
@@ -157,6 +157,7 @@ void AmrLevelAdv::calculateFluxes(const int i, const int j, const int k, const i
     }
   }
   HLLCFlux(uLRe_R, u0Re_L, fluxVec, d);
+  // Print() << i << ": Left = " << uLRe_R[0] << ", " << "Right = " << u0Re_L[0] << ", Flux = " << fluxVec[0] << std::endl;
 }
 
 // Initialize grid data at problem start-up.
@@ -220,7 +221,7 @@ void AmrLevelAdv::initData()
           else if (orient == 4) { // divide states along circle of radius 1
             var = (x - 1) * (x - 1) + (y - 1) * (y - 1) + 0.34; // cylindrical explosion
           }
-          if (var < 0.5) {
+          if (var < 400.) {
             for (int ii = 0; ii < NUM_STATE; ii++) {
               arr(i, j, k, ii) = uL0[ii];
             }
@@ -511,7 +512,7 @@ Real AmrLevelAdv::estTimeStep(Real)
 {
   // This is just a dummy value to start with
   Real dt_est = 1.0e+20;
-  State uVec, wVec;
+  State uVec;
 
   const Real *dx = geom.CellSize();
   const Real *prob_lo = geom.ProbLo();
