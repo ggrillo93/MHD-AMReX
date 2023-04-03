@@ -1,6 +1,8 @@
 #include "limiters.H"
 #include <algorithm>
 
+std::function<double(double)> limFunc;
+
 double minbee(double r) {
     if (r <= 0) {
         return 0;

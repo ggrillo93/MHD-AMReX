@@ -1,4 +1,5 @@
 #include "AmrMHD.H"
+#include "AmrLevelAdv.H"
 
 using namespace amrex;
 
@@ -131,7 +132,7 @@ void HLLCFlux(State uL, State uR, State& fluxVec, unsigned int coord) {
   else if ((SStar >= 0) || (SStar <= 0. && SR >= 0.)) {
     flux(uL, fluxL, coord);
     flux(uR, fluxR, coord);
-    for (int i = 0; i < NUM_STATE; i++) {
+    for (int i = 0; i < (int) uL.size(); i++) {
         uHLL[i] = (SR * uR[i] - SL * uL[i] - fluxR[i] + fluxL[i]) / (SR - SL);
     }
     primitive(uHLL, wHLL);
@@ -144,7 +145,7 @@ void HLLCFlux(State uL, State uR, State& fluxVec, unsigned int coord) {
         wK = wR, uK = uR, SK = SR, fluxK = fluxR;
     }
     calcUStarK(wK, wHLL, uK[ENE], SK, SStar, uStarK, coord);
-    for (int i = 0; i < NUM_STATE; i++) {
+    for (int i = 0; i < (int) uL.size(); i++) {
         fluxVec[i] = fluxK[i] + SK * (uStarK[i] - uK[i]);
     }
   }
@@ -153,10 +154,10 @@ void HLLCFlux(State uL, State uR, State& fluxVec, unsigned int coord) {
   }
 }
 
-void reconstruct(State uL, State u0, State uR, State& u0Re_L, State& u0Re_R, State varLim) {
+void reconstruct(State uL, State u0, State uR, State& u0Re_L, State& u0Re_R, varMap varLim) {
   /* Reconstruct state u0 at boundaries. uL/uR = state at the cell to the left/right of u0, u0Re_L/R = reconstructed state u0 at the left/right interfaces */
   Real r, uDelta_i, eps = 1e-9, limDeltaL, limDeltaR, xi;
-  for (int i = 0; i < NUM_STATE; i++) {
+  for (int i = 0; i < (int) uL.size(); i++) {
     limDeltaR = uR[varLim[i]] - u0[varLim[i]];
     if (std::abs(limDeltaR) < eps) {
         u0Re_L[i] = u0Re_R[i] = u0[i];
@@ -178,7 +179,7 @@ void halfTimeEvol(State& u0Re_L, State& u0Re_R, Real step, unsigned int coord) {
   Real correction;
   flux(u0Re_L, fluxL, coord);
   flux(u0Re_R, fluxR, coord);
-  for (int i = 0; i < NUM_STATE; i++) {
+  for (int i = 0; i < (int) u0Re_L.size(); i++) {
     correction = 0.5 * step * (fluxR[i] - fluxL[i]);
     u0Re_L[i] -= correction;
     u0Re_R[i] -= correction;

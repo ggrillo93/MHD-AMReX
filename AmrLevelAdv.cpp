@@ -8,7 +8,8 @@
 
 using namespace amrex;
 
-std::function<double(double)> limFunc; // slope limiter for MUSCL-Hancock
+Real Gamma;
+
 int orient; // allows for different tests
 int order = 2; // order = 2 uses MUSCL-Hancock, otherwise accuracy is first order
 
@@ -18,7 +19,7 @@ int AmrLevelAdv::do_reflux = 1;
 
 State wR0, wL0; // initial states
 
-State varLim;
+varMap varLim;
 
 int AmrLevelAdv::NUM_STATE = wR0.size();
 int AmrLevelAdv::NUM_GROW = 2;  // number of ghost cells

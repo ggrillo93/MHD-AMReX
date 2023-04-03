@@ -5,9 +5,7 @@
 #include <AMReX_FluxRegister.H>
 #include <AMReX_Array.H>
 #include "limiters.H"
-#include <array>
 #include "AmrMHD.H"
-
 #include <memory>
 #include <iostream>
 
@@ -17,13 +15,7 @@
 
 using namespace amrex;
 
-extern int Gamma;
-
-enum ConsVar{RHO=0, MOM_X, MOM_Y, MOM_Z, ENE, BX, BY, BZ};
-enum PrimVar{VX=1, VY, VZ, PRE};
-
-extern typedef std::array<Real, 8> State;
-extern typedef std::array<Real, 3> Vec3;
+extern Real Gamma;
 
 enum StateType
 {
