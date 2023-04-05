@@ -157,7 +157,10 @@ void AmrLevelAdv::calculateFluxes(const int i, const int j, const int k, const i
     }
   }
   HLLCFlux(uLRe_R, u0Re_L, fluxVec, d);
-  // Print() << i << ": Left = " << uLRe_R[0] << ", " << "Right = " << u0Re_L[0] << ", Flux = " << fluxVec[0] << std::endl;
+  // for (int ii = 0; ii < stateVars; ii++) {
+  //   Print() << i << ": " << ii << ": Left = " << uLRe_R[ii] << ", " << "Right = " << u0Re_L[ii] << ", Flux = " << fluxVec[ii] << std::endl;
+  // }
+
 }
 
 // Initialize grid data at problem start-up.

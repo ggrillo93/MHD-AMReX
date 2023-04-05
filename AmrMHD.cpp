@@ -14,7 +14,7 @@ Real energy(State wVec) {
   Real vx = wVec[VX], vy = wVec[VY], vz = wVec[VZ];
   Real v2 = vx * vx + vy * vy + vz * vz;
   Real B2 = BSquared(wVec);
-  return wVec[PRE] / (Gamma - 1) + 0.5 * wVec[RHO] * (v2 + B2);
+  return wVec[PRE] / (Gamma - 1) + 0.5 * (wVec[RHO] * v2 + B2);
 }
 
 Real pressure(State uVec) {
@@ -105,7 +105,7 @@ void calcUStarK(State wK, State wHLL, Real EK, Real SK, Real SStar, State& uStar
   Real rhoK = wK[RHO], vxK = wK[VX], vyK = wK[VY], vzK = wK[VZ], pK = wK[PRE], BxK = wK[BX], ByK = wK[BY], BzK = wK[BZ];
   Real vNormK = wK[1 + coord], BNormK = wK[5 + coord];
   Real rhoStarK = rhoK * (SK - vNormK) / (SK - SStar);
-  Real BNormStar = wK[5 + coord];
+  Real BNormStar = wHLL[5 + coord];
   Real pKT = pK + 0.5 * BSquared(wK);
   Real pStarT = rhoK * (SK - vNormK) * (SStar - vNormK) + BNormStar * BNormStar + pKT - BNormK * BNormK;
   Real vdotBK = vxK * BxK + vyK * ByK + vzK * BzK;
@@ -136,7 +136,7 @@ void HLLCFlux(State uL, State uR, State& fluxVec, unsigned int coord) {
     State uStarK, fluxL, fluxR, uHLL, wHLL;
     flux(uL, fluxL, coord);
     flux(uR, fluxR, coord);
-    for (int i = 0; i < (int) uL.size(); i++) {
+    for (int i = 0; i < stateVars; i++) {
         uHLL[i] = (SR * uR[i] - SL * uL[i] - fluxR[i] + fluxL[i]) / (SR - SL);
     }
     primitive(uHLL, wHLL);
@@ -149,7 +149,7 @@ void HLLCFlux(State uL, State uR, State& fluxVec, unsigned int coord) {
         wK = wR, uK = uR, SK = SR, fluxK = fluxR;
     }
     calcUStarK(wK, wHLL, uK[ENE], SK, SStar, uStarK, coord);
-    for (int i = 0; i < (int) uL.size(); i++) {
+    for (int i = 0; i < stateVars; i++) {
         fluxVec[i] = fluxK[i] + SK * (uStarK[i] - uK[i]);
     }
   }
@@ -183,7 +183,7 @@ void halfTimeEvol(State& u0Re_L, State& u0Re_R, Real step, unsigned int coord) {
   Real correction;
   flux(u0Re_L, fluxL, coord);
   flux(u0Re_R, fluxR, coord);
-  for (int i = 0; i < (int) u0Re_L.size(); i++) {
+  for (int i = 0; i < stateVars; i++) {
     correction = 0.5 * step * (fluxR[i] - fluxL[i]);
     u0Re_L[i] -= correction;
     u0Re_R[i] -= correction;
